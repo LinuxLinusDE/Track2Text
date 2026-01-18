@@ -2,7 +2,8 @@
 
 Erzeugt eine Rohfassung einer Wegbeschreibung aus der neuesten GPX-Datei im
 Ordner `inbox`. Die Ausgabe ist bewusst stichpunktartig und fuer eine spaetere
-Umformulierung (z. B. mit ChatGPT) gedacht.
+Umformulierung (z. B. mit ChatGPT) gedacht. Fuer mehr Details sind `.fit`-Dateien
+zu bevorzugen.
 
 ## Was macht das Projekt genau?
 

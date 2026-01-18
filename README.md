@@ -2,7 +2,7 @@
 
 Creates a draft route description from the newest GPX file in `inbox/`.
 The output is intentionally bullet-style and meant to be rewritten later
-(e.g. with ChatGPT).
+(e.g. with ChatGPT). For more detailed metrics, prefer `.fit` files.
 
 ## What does the project do?
 
