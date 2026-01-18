@@ -1,0 +1,31 @@
+# Output language for the generated text file (DE or EN)
+output_language=DE
+
+# Optional: process a specific file (absolute/relative path or filename in inbox/)
+# input_file=Fahrt_am_Nachmittag.fit
+
+# Maximum number of samples used for reverse geocoding.
+# Higher = more detailed output, slower runtime.
+TRACK2TEXT_MAX_SAMPLES=300
+
+# Minimum distance between samples in meters.
+# Lower = more detail (more points), higher = faster (fewer points).
+TRACK2TEXT_MIN_DIST_M=30
+
+# Section length in kilometers for the "Section" markers.
+# Smaller = more frequent sections; larger = fewer or no section markers.
+TRACK2TEXT_SECTION_KM=2
+
+# Include Start/Finish lines in the output (1 = on, 0 = off).
+TRACK2TEXT_INCLUDE_START_GOAL=1
+
+# Geocoder settings for reverse geocoding (nominatim or photon).
+# Main geocoder is used for streets; locality geocoder for place/district names.
+TRACK2TEXT_GEOCODER=nominatim
+TRACK2TEXT_LOCALITY_GEOCODER=photon
+
+# Locality zoom level (higher = more local, lower = more general).
+TRACK2TEXT_LOCALITY_ZOOM=14
+
+# Set your contact email if using Nominatim regularly.
+# NOMINATIM_USER_AGENT="track2text/1.0 (contact: you@example.com)"
