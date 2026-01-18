@@ -29,8 +29,10 @@ htmlcov/
 *.swo
 .DS_Store
 Thumbs.db
+*.code-workspace
 
 # Project data outputs
 *.gpx
 *.txt
 *.fit
+*.json
