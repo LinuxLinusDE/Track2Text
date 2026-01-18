@@ -195,6 +195,49 @@ def format_duration(seconds: Optional[float]) -> Optional[str]:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
+def format_speed(value: Optional[float], unit: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if unit in (None, "m/s"):
+        return f"{value * 3.6:.1f} km/h"
+    return f"{value} {unit}"
+
+
+def format_distance(value: Optional[float], unit: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if unit in (None, "m"):
+        return f"{value / 1000.0:.2f} km"
+    return f"{value} {unit}"
+
+
+def format_altitude(value: Optional[float], unit: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if unit in (None, "m"):
+        return f"{value:.0f} m"
+    return f"{value} {unit}"
+
+
+def format_scalar(
+    value: Optional[float],
+    unit: Optional[str],
+    decimals: int,
+    default_unit: Optional[str] = None,
+) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if decimals <= 0:
+            formatted = f"{value:.0f}"
+        else:
+            formatted = f"{value:.{decimals}f}"
+    else:
+        formatted = str(value)
+    unit_label = unit or default_unit
+    return f"{formatted} {unit_label}".rstrip() if unit_label else formatted
+
+
 def parse_fit_points_and_summary(
     fit_path: str, lang: str
 ) -> Tuple[List[Point], List[str], List[str], Dict[str, object]]:
@@ -283,57 +326,65 @@ def parse_fit_points_and_summary(
     add_line(
         "Anstieg",
         "Ascent",
-        f"{ascent[0]} {ascent[1] or 'm'}" if ascent else None,
+        format_altitude(ascent[0], ascent[1]) if ascent else None,
     )
     if ascent:
-        summary_data["ascent"] = f"{ascent[0]} {ascent[1] or 'm'}"
+        summary_data["ascent"] = format_altitude(ascent[0], ascent[1])
     add_line(
         "Abstieg",
         "Descent",
-        f"{descent[0]} {descent[1] or 'm'}" if descent else None,
+        format_altitude(descent[0], descent[1]) if descent else None,
     )
     if descent:
-        summary_data["descent"] = f"{descent[0]} {descent[1] or 'm'}"
+        summary_data["descent"] = format_altitude(descent[0], descent[1])
 
     max_grade = session_values.get("max_grade")
     add_line(
         "Max. Anstieg",
         "Max grade",
-        f"{max_grade[0]} {max_grade[1] or '%'}" if max_grade else None,
+        format_scalar(max_grade[0], max_grade[1], 1, "%") if max_grade else None,
     )
     if max_grade:
-        summary_data["max_grade"] = f"{max_grade[0]} {max_grade[1] or '%'}"
+        summary_data["max_grade"] = format_scalar(max_grade[0], max_grade[1], 1, "%")
 
     max_alt = session_values.get("max_altitude") or session_values.get("max_elevation")
     add_line(
         "Max. Hoehe",
         "Max altitude",
-        f"{max_alt[0]} {max_alt[1] or 'm'}" if max_alt else None,
+        format_altitude(max_alt[0], max_alt[1]) if max_alt else None,
     )
     if max_alt:
-        summary_data["max_altitude"] = f"{max_alt[0]} {max_alt[1] or 'm'}"
+        summary_data["max_altitude"] = format_altitude(max_alt[0], max_alt[1])
 
     avg_power = session_values.get("avg_power")
     add_line(
         "Durchschnittliche Watt",
         "Average power",
-        f"{avg_power[0]} {avg_power[1] or 'W'}" if avg_power else None,
+        format_scalar(avg_power[0], avg_power[1], 0, "W") if avg_power else None,
     )
     if avg_power:
-        summary_data["avg_power"] = f"{avg_power[0]} {avg_power[1] or 'W'}"
+        summary_data["avg_power"] = format_scalar(avg_power[0], avg_power[1], 0, "W")
     total_distance = session_values.get("total_distance")
     add_line(
         "Distanz",
         "Distance",
-        f"{total_distance[0]} {total_distance[1] or 'm'}" if total_distance else None,
+        format_distance(total_distance[0], total_distance[1])
+        if total_distance
+        else None,
     )
     if total_distance:
-        summary_data["distance"] = f"{total_distance[0]} {total_distance[1] or 'm'}"
+        summary_data["distance"] = format_distance(
+            total_distance[0], total_distance[1]
+        )
     avg_speed = session_values.get("avg_speed")
     max_speed = session_values.get("max_speed")
     if avg_speed or max_speed:
-        avg_part = f"{avg_speed[0]} {avg_speed[1] or 'm/s'}" if avg_speed else "-"
-        max_part = f"{max_speed[0]} {max_speed[1] or 'm/s'}" if max_speed else "-"
+        avg_part = (
+            format_speed(avg_speed[0], avg_speed[1]) if avg_speed else "-"
+        )
+        max_part = (
+            format_speed(max_speed[0], max_speed[1]) if max_speed else "-"
+        )
         add_line(
             "Geschwindigkeit (avg/max)",
             "Speed (avg/max)",
@@ -343,22 +394,25 @@ def parse_fit_points_and_summary(
     avg_hr = session_values.get("avg_heart_rate")
     max_hr = session_values.get("max_heart_rate")
     if avg_hr or max_hr:
-        avg_part = f"{avg_hr[0]} {avg_hr[1] or 'bpm'}" if avg_hr else "-"
-        max_part = f"{max_hr[0]} {max_hr[1] or 'bpm'}" if max_hr else "-"
-        add_line(
-            "Puls (avg/max)",
-            "Heart rate (avg/max)",
-            f"{avg_part} / {max_part}",
+        avg_part = (
+            format_scalar(avg_hr[0], avg_hr[1], 0, "bpm") if avg_hr else "-"
+        )
+        max_part = (
+            format_scalar(max_hr[0], max_hr[1], 0, "bpm") if max_hr else "-"
         )
         summary_data["heart_rate_avg_max"] = f"{avg_part} / {max_part}"
     avg_cadence = session_values.get("avg_cadence")
     add_line(
         "Durchschnittliche Kadenz",
         "Average cadence",
-        f"{avg_cadence[0]} {avg_cadence[1] or 'rpm'}" if avg_cadence else None,
+        format_scalar(avg_cadence[0], avg_cadence[1], 0, "rpm")
+        if avg_cadence
+        else None,
     )
     if avg_cadence:
-        summary_data["avg_cadence"] = f"{avg_cadence[0]} {avg_cadence[1] or 'rpm'}"
+        summary_data["avg_cadence"] = format_scalar(
+            avg_cadence[0], avg_cadence[1], 0, "rpm"
+        )
 
     if record_temps:
         min_temp = min(record_temps)
@@ -911,7 +965,6 @@ def summary_at_glance(
             "max_altitude",
             "avg_power",
             "speed_avg_max",
-            "heart_rate_avg_max",
             "avg_cadence",
             "temperature_min_max_avg",
         ):
