@@ -28,4 +28,6 @@ TRACK2TEXT_LOCALITY_GEOCODER=photon
 TRACK2TEXT_LOCALITY_ZOOM=14
 
 # Set your contact email if using Nominatim regularly.
-# NOMINATIM_USER_AGENT="track2text/1.0 (contact: you@example.com)"
+# Required for high-volume usage; replaced in HTTP User-Agent header.
+# Format: track2text/1.0 (contact: your.email@example.com)
+NOMINATIM_USER_AGENT=track2text/1.0 (contact: your.email@example.com)

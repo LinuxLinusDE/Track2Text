@@ -10,6 +10,8 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
+import socket
 import xml.etree.ElementTree as ET
 import argparse
 from dataclasses import dataclass
@@ -62,10 +64,18 @@ def env_first(keys: Iterable[str], default: str) -> str:
     return default
 
 
-USER_AGENT = env_first(
-    ["NOMINATIM_USER_AGENT"],
-    "track2text/1.0 (local script; contact: none)",
-)
+def build_user_agent(config: Dict[str, str]) -> str:
+    """Build User-Agent from config or env, with fallback."""
+    user_agent = env_first(
+        ["NOMINATIM_USER_AGENT"],
+        config.get("NOMINATIM_USER_AGENT", ""),
+    )
+    if user_agent and user_agent.strip():
+        return user_agent.strip()
+    # Fallback: generic but compliant
+    return "track2text/1.0 (contact: local-user)"
+
+
 GEOCODER = env_first(["TRACK2TEXT_GEOCODER", "GPXER_GEOCODER"], "nominatim").lower()
 LOCALITY_GEOCODER = env_first(
     ["TRACK2TEXT_LOCALITY_GEOCODER", "GPXER_LOCALITY_GEOCODER"],
@@ -506,17 +516,31 @@ def sample_points(points: List[Point], target_max: int = 200) -> List[Point]:
     return sampled
 
 
-def fetch_json(url: str, timeout: int = 20) -> Dict:
+def fetch_json(url: str, user_agent: str, timeout: int = 20) -> Dict:
+    """Fetch JSON with proper error handling and user-agent.
+    
+    Raises:
+        urllib.error.URLError: On network/connection errors
+        urllib.error.HTTPError: On HTTP errors (e.g., 429 rate limit)
+        json.JSONDecodeError: On invalid JSON
+    """
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": USER_AGENT},
+        headers={"User-Agent": user_agent},
         method="GET",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raise urllib.error.URLError(f"HTTP {e.code}: {e.reason}") from e
+    except socket.timeout as e:
+        raise urllib.error.URLError(f"Socket timeout after {timeout}s") from e
+    except urllib.error.URLError as e:
+        raise
 
 
-def reverse_geocode_nominatim(point: Point, zoom: int = 18) -> Dict:
+def reverse_geocode_nominatim(point: Point, user_agent: str, zoom: int = 18) -> Dict:
     params = {
         "format": "jsonv2",
         "lat": f"{point.lat:.7f}",
@@ -529,16 +553,16 @@ def reverse_geocode_nominatim(point: Point, zoom: int = 18) -> Dict:
     url = "https://nominatim.openstreetmap.org/reverse?" + urllib.parse.urlencode(
         params
     )
-    return fetch_json(url)
+    return fetch_json(url, user_agent)
 
 
-def reverse_geocode_photon(point: Point) -> Dict:
+def reverse_geocode_photon(point: Point, user_agent: str) -> Dict:
     params = {
         "lat": f"{point.lat:.7f}",
         "lon": f"{point.lon:.7f}",
     }
     url = "https://photon.komoot.io/reverse?" + urllib.parse.urlencode(params)
-    data = fetch_json(url)
+    data = fetch_json(url, user_agent)
     features = data.get("features") or []
     if not features:
         return {}
@@ -571,16 +595,16 @@ def normalize_photon(feature: Dict) -> Dict:
     }
 
 
-def reverse_geocode(point: Point, zoom: int = 18) -> Dict:
+def reverse_geocode(point: Point, user_agent: str, zoom: int = 18) -> Dict:
     if GEOCODER == "photon":
-        return normalize_photon(reverse_geocode_photon(point))
-    return reverse_geocode_nominatim(point, zoom=zoom)
+        return normalize_photon(reverse_geocode_photon(point, user_agent))
+    return reverse_geocode_nominatim(point, user_agent, zoom=zoom)
 
 
-def reverse_geocode_locality(point: Point, zoom: int = 12) -> Dict:
+def reverse_geocode_locality(point: Point, user_agent: str, zoom: int = 12) -> Dict:
     if LOCALITY_GEOCODER == "photon":
-        return normalize_photon(reverse_geocode_photon(point))
-    return reverse_geocode_nominatim(point, zoom=zoom)
+        return normalize_photon(reverse_geocode_photon(point, user_agent))
+    return reverse_geocode_nominatim(point, user_agent, zoom=zoom)
 
 
 def pick_road(address: Dict) -> Optional[str]:
@@ -634,6 +658,7 @@ def pick_ortsteil(address: Dict) -> Optional[str]:
 def build_description(
     points: List[Point],
     total_dist_m: float,
+    user_agent: str,
     lang: str,
 ) -> Tuple[List[str], int]:
     try:
@@ -689,8 +714,8 @@ def build_description(
             time.sleep(1.0)  # Nominatim usage policy
             cumulative_m += haversine_m(sampled[idx - 1], p)
         try:
-            data = reverse_geocode(p, zoom=18)
-        except Exception as exc:
+            data = reverse_geocode(p, user_agent, zoom=18)
+        except (urllib.error.URLError, socket.timeout) as exc:
             print(
                 colorize("Reverse geocoding failed:", "red", use_color),
                 f"sample {idx + 1}/{len(sampled)},",
@@ -748,11 +773,11 @@ def build_description(
                 )
                 time.sleep(1.0)
                 try:
-                    loc_data = reverse_geocode_locality(p, zoom=locality_zoom)
+                    loc_data = reverse_geocode_locality(p, user_agent, zoom=locality_zoom)
                     loc_address = loc_data.get("address", {})
                     section_locality = pick_locality(loc_address) or section_locality
                     section_ortsteil = pick_ortsteil(loc_address) or section_ortsteil
-                except Exception:
+                except (urllib.error.URLError, socket.timeout):
                     print(
                         colorize(
                             "Locality reverse geocoding failed for section marker.",
@@ -796,11 +821,11 @@ def build_description(
                     )
                     time.sleep(1.0)
                     try:
-                        loc_data = reverse_geocode_locality(p, zoom=locality_zoom)
+                        loc_data = reverse_geocode_locality(p, user_agent, zoom=locality_zoom)
                         loc_address = loc_data.get("address", {})
                         last_locality = pick_locality(loc_address) or last_locality
                         last_ortsteil = pick_ortsteil(loc_address) or last_ortsteil
-                    except Exception:
+                    except (urllib.error.URLError, socket.timeout):
                         print(
                             colorize(
                                 "Locality reverse geocoding failed for start marker.",
@@ -883,6 +908,7 @@ def build_description(
         lines.append(goal_entry)
 
     return lines, len(sampled)
+
 
 def load_config(path: str) -> Dict[str, str]:
     if not os.path.exists(path):
@@ -1075,10 +1101,12 @@ def main() -> int:
         os.environ["TRACK2TEXT_MIN_DIST_M"] = args.TRACK2TEXT_MIN_DIST_M
     if args.NOMINATIM_USER_AGENT is not None:
         os.environ["NOMINATIM_USER_AGENT"] = args.NOMINATIM_USER_AGENT
+    
     config = load_config(CONFIG_PATH)
     lang = normalize_output_language(
         args.output_language or config.get("output_language")
     )
+    user_agent = build_user_agent(config)
 
     try:
         input_path = resolve_input_path(
@@ -1110,7 +1138,7 @@ def main() -> int:
             return 1
 
         total_dist_m = route_distance_m(points)
-        lines, sample_count = build_description(points, total_dist_m, lang)
+        lines, sample_count = build_description(points, total_dist_m, user_agent, lang)
 
         base = os.path.splitext(os.path.basename(track_path))[0]
         out_path = os.path.join(os.path.dirname(track_path), f"{base}.txt")
