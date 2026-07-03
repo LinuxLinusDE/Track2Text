@@ -80,6 +80,12 @@ deactivate
 python3 track2text.py
 ```
 
+Interactive mode:
+
+```bash
+python3 track2text.py --interactive
+```
+
 ## Input / Output
 
 - Input: newest `*.gpx` or `*.fit` in `inbox/`
@@ -111,6 +117,7 @@ You can pass common settings directly after the Python command:
   (higher = fewer points).
 - `--file inbox/myride.fit` processes a specific GPX/FIT file (absolute or
   relative path, or filename in `inbox/`).
+- `--interactive` or `-i` starts a guided setup for the same common settings.
 - `--NOMINATIM_USER_AGENT="track2text/1.0 (contact: you@example.com)"` sets a
   proper Nominatim user agent.
 
@@ -130,6 +137,9 @@ Open the generated `inbox/<filename>.txt` and confirm that the header contains
 
 - `--fast` for a quicker, less detailed run (fewer samples, larger spacing).
 - `--detailed` for a slower, more detailed run (more samples, smaller spacing).
+
+In interactive mode, presets jump straight to the summary. Choose `Manually
+configure` if you want to adjust individual values.
 
 ## More examples
 
@@ -249,6 +259,10 @@ TRACK2TEXT_INCLUDE_START_GOAL=0 python3 track2text.py
 ```bash
 NOMINATIM_USER_AGENT="track2text/1.0 (contact: you@example.com)" python3 track2text.py
 ```
+
+If you get `HTTP 403: Forbidden`, the User-Agent is often still a placeholder.
+Replace `you@example.com` with a real contact address or choose `photon` as the
+main geocoder in interactive mode.
 
 ## Privacy / sensitive data
 

@@ -25,6 +25,36 @@ except Exception:  # pragma: no cover - optional dependency
 
 INBOX_DIR = os.path.join(os.path.dirname(__file__), "inbox")
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.txt")
+TRACK_FILE_EXTENSIONS = (".gpx", ".fit")
+RUNTIME_ENV_KEYS = (
+    "TRACK2TEXT_MAX_SAMPLES",
+    "TRACK2TEXT_SECTION_KM",
+    "TRACK2TEXT_INCLUDE_START_GOAL",
+    "TRACK2TEXT_GEOCODER",
+    "TRACK2TEXT_LOCALITY_GEOCODER",
+    "TRACK2TEXT_LOCALITY_ZOOM",
+    "TRACK2TEXT_MIN_DIST_M",
+    "NOMINATIM_USER_AGENT",
+)
+RUNTIME_KEY_ALIASES = {
+    "TRACK2TEXT_MAX_SAMPLES": ("TRACK2TEXT_MAX_SAMPLES", "GPXER_MAX_SAMPLES"),
+    "TRACK2TEXT_SECTION_KM": ("TRACK2TEXT_SECTION_KM", "GPXER_SECTION_KM"),
+    "TRACK2TEXT_INCLUDE_START_GOAL": (
+        "TRACK2TEXT_INCLUDE_START_GOAL",
+        "GPXER_INCLUDE_START_GOAL",
+    ),
+    "TRACK2TEXT_GEOCODER": ("TRACK2TEXT_GEOCODER", "GPXER_GEOCODER"),
+    "TRACK2TEXT_LOCALITY_GEOCODER": (
+        "TRACK2TEXT_LOCALITY_GEOCODER",
+        "GPXER_LOCALITY_GEOCODER",
+    ),
+    "TRACK2TEXT_LOCALITY_ZOOM": (
+        "TRACK2TEXT_LOCALITY_ZOOM",
+        "GPXER_LOCALITY_ZOOM",
+    ),
+    "TRACK2TEXT_MIN_DIST_M": ("TRACK2TEXT_MIN_DIST_M", "GPXER_MIN_DIST_M"),
+    "NOMINATIM_USER_AGENT": ("NOMINATIM_USER_AGENT",),
+}
 
 ANSI_CODES = {
     "reset": "\x1b[0m",
@@ -76,17 +106,34 @@ def build_user_agent(config: Dict[str, str]) -> str:
     return "track2text/1.0 (contact: local-user)"
 
 
-GEOCODER = env_first(["TRACK2TEXT_GEOCODER", "GPXER_GEOCODER"], "nominatim").lower()
-LOCALITY_GEOCODER = env_first(
-    ["TRACK2TEXT_LOCALITY_GEOCODER", "GPXER_LOCALITY_GEOCODER"],
-    "photon",
-).lower()
+GEOCODER = "nominatim"
+LOCALITY_GEOCODER = "photon"
+
+
+def refresh_runtime_geocoders() -> None:
+    global GEOCODER, LOCALITY_GEOCODER
+    GEOCODER = env_first(["TRACK2TEXT_GEOCODER", "GPXER_GEOCODER"], "nominatim").lower()
+    LOCALITY_GEOCODER = env_first(
+        ["TRACK2TEXT_LOCALITY_GEOCODER", "GPXER_LOCALITY_GEOCODER"],
+        "photon",
+    ).lower()
+
+
+refresh_runtime_geocoders()
 
 
 @dataclass
 class Point:
     lat: float
     lon: float
+
+
+class DependencyError(RuntimeError):
+    pass
+
+
+class GeocodingError(RuntimeError):
+    pass
 
 
 def newest_track_file(inbox_dir: str, lang: str) -> str:
@@ -100,7 +147,7 @@ def newest_track_file(inbox_dir: str, lang: str) -> str:
     track_files = [
         os.path.join(inbox_dir, f)
         for f in os.listdir(inbox_dir)
-        if f.lower().endswith((".gpx", ".fit"))
+        if f.lower().endswith(TRACK_FILE_EXTENSIONS)
     ]
     if not track_files:
         msg = (
@@ -188,11 +235,19 @@ def ensure_fitparse(lang: str) -> None:
     if FitFile is not None:
         return
     msg = (
-        "Fehler: fitparse ist nicht installiert. Bitte `pip install -r requirements.txt` ausfuehren."
+        "FIT-Dateien benoetigen das Python-Paket `fitparse`.\n"
+        "Installiere es im Projektordner mit:\n"
+        "  python3 -m pip install -r requirements.txt\n"
+        "Wenn du eine virtuelle Umgebung nutzt, aktiviere sie vorher mit:\n"
+        "  source .venv/bin/activate"
         if lang == "DE"
-        else "Error: fitparse is not installed. Please run `pip install -r requirements.txt`."
+        else "FIT files require the Python package `fitparse`.\n"
+        "Install it from the project folder with:\n"
+        "  python3 -m pip install -r requirements.txt\n"
+        "If you use a virtual environment, activate it first with:\n"
+        "  source .venv/bin/activate"
     )
-    raise RuntimeError(msg)
+    raise DependencyError(msg)
 
 
 def format_duration(seconds: Optional[float]) -> Optional[str]:
@@ -540,6 +595,74 @@ def fetch_json(url: str, user_agent: str, timeout: int = 20) -> Dict:
         raise
 
 
+def is_geocoding_policy_error(exc: BaseException) -> bool:
+    text = str(exc)
+    return "HTTP 403" in text or "HTTP 429" in text
+
+
+def user_agent_looks_placeholder(user_agent: str) -> bool:
+    lowered = user_agent.lower()
+    return "your.email@example.com" in lowered or "local-user" in lowered
+
+
+def geocoding_policy_message(
+    exc: BaseException,
+    lang: str,
+    user_agent: str,
+    geocoder_name: str,
+) -> str:
+    status = "HTTP 429" if "HTTP 429" in str(exc) else "HTTP 403"
+    if lang == "DE":
+        lines = [
+            f"Reverse-Geocoding wurde vom Dienst abgelehnt ({status}).",
+            f"Geocoder: {geocoder_name}",
+            f"User-Agent: {user_agent}",
+        ]
+        if geocoder_name == "nominatim":
+            if user_agent_looks_placeholder(user_agent):
+                lines.append(
+                    "Der Nominatim User-Agent ist noch ein Platzhalter. "
+                    "Setze in config.txt eine echte Kontaktadresse:"
+                )
+                lines.append(
+                    "  NOMINATIM_USER_AGENT=track2text/1.0 "
+                    "(contact: dein.name@example.com)"
+                )
+            lines.append(
+                "Alternativ im interaktiven Modus als Haupt-Geocoder `photon` waehlen."
+            )
+            lines.append(
+                "Bei HTTP 429 bitte spaeter erneut versuchen oder weniger Samples nutzen."
+            )
+        else:
+            lines.append(
+                "Bitte spaeter erneut versuchen oder weniger Samples bzw. einen anderen "
+                "Geocoder nutzen."
+            )
+        return "\n".join(lines)
+
+    lines = [
+        f"Reverse geocoding was rejected by the service ({status}).",
+        f"Geocoder: {geocoder_name}",
+        f"User-Agent: {user_agent}",
+    ]
+    if geocoder_name == "nominatim":
+        if user_agent_looks_placeholder(user_agent):
+            lines.append(
+                "The Nominatim User-Agent is still a placeholder. "
+                "Set a real contact address in config.txt:"
+            )
+            lines.append(
+                "  NOMINATIM_USER_AGENT=track2text/1.0 "
+                "(contact: your.name@example.com)"
+            )
+        lines.append("Alternatively choose `photon` as the main geocoder in interactive mode.")
+        lines.append("For HTTP 429, try again later or use fewer samples.")
+    else:
+        lines.append("Try again later or use fewer samples / another geocoder.")
+    return "\n".join(lines)
+
+
 def reverse_geocode_nominatim(point: Point, user_agent: str, zoom: int = 18) -> Dict:
     params = {
         "format": "jsonv2",
@@ -716,6 +839,10 @@ def build_description(
         try:
             data = reverse_geocode(p, user_agent, zoom=18)
         except (urllib.error.URLError, socket.timeout) as exc:
+            if is_geocoding_policy_error(exc):
+                raise GeocodingError(
+                    geocoding_policy_message(exc, lang, user_agent, GEOCODER)
+                ) from exc
             print(
                 colorize("Reverse geocoding failed:", "red", use_color),
                 f"sample {idx + 1}/{len(sampled)},",
@@ -777,7 +904,13 @@ def build_description(
                     loc_address = loc_data.get("address", {})
                     section_locality = pick_locality(loc_address) or section_locality
                     section_ortsteil = pick_ortsteil(loc_address) or section_ortsteil
-                except (urllib.error.URLError, socket.timeout):
+                except (urllib.error.URLError, socket.timeout) as exc:
+                    if is_geocoding_policy_error(exc):
+                        raise GeocodingError(
+                            geocoding_policy_message(
+                                exc, lang, user_agent, LOCALITY_GEOCODER
+                            )
+                        ) from exc
                     print(
                         colorize(
                             "Locality reverse geocoding failed for section marker.",
@@ -825,7 +958,13 @@ def build_description(
                         loc_address = loc_data.get("address", {})
                         last_locality = pick_locality(loc_address) or last_locality
                         last_ortsteil = pick_ortsteil(loc_address) or last_ortsteil
-                    except (urllib.error.URLError, socket.timeout):
+                    except (urllib.error.URLError, socket.timeout) as exc:
+                        if is_geocoding_policy_error(exc):
+                            raise GeocodingError(
+                                geocoding_policy_message(
+                                    exc, lang, user_agent, LOCALITY_GEOCODER
+                                )
+                            ) from exc
                         print(
                             colorize(
                                 "Locality reverse geocoding failed for start marker.",
@@ -1004,6 +1143,335 @@ def summary_at_glance(
     return lines
 
 
+def list_track_files(inbox_dir: str) -> List[str]:
+    if not os.path.isdir(inbox_dir):
+        return []
+    paths = [
+        os.path.join(inbox_dir, name)
+        for name in os.listdir(inbox_dir)
+        if name.lower().endswith(TRACK_FILE_EXTENSIONS)
+        and os.path.isfile(os.path.join(inbox_dir, name))
+    ]
+    return sorted(paths, key=os.path.getmtime, reverse=True)
+
+
+def describe_file(path: str) -> str:
+    name = os.path.basename(path)
+    try:
+        changed = time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(path)))
+    except OSError:
+        changed = "unbekannt"
+    return f"{name} ({changed})"
+
+
+def prompt_text(label: str, default: Optional[str] = None) -> str:
+    suffix = f" [{default}]" if default not in (None, "") else ""
+    try:
+        value = input(f"{label}{suffix}: ")
+    except EOFError:
+        print()
+        return default or ""
+    value = value.strip()
+    if not value and default is not None:
+        return default
+    return value
+
+
+def prompt_choice(label: str, choices: List[str], default: str) -> str:
+    choice_map = {choice.lower(): choice for choice in choices}
+    selected_default = choice_map.get(default.lower(), choices[0])
+    hint = "/".join(choices)
+    while True:
+        value = prompt_text(f"{label} ({hint})", selected_default)
+        selected = choice_map.get(value.lower())
+        if selected:
+            return selected
+        print(f"Bitte eine dieser Optionen eingeben: {hint}")
+
+
+def prompt_int(label: str, default: str, min_value: Optional[int] = None) -> str:
+    while True:
+        value = prompt_text(label, default)
+        try:
+            parsed = int(value)
+        except ValueError:
+            print("Bitte eine ganze Zahl eingeben.")
+            continue
+        if min_value is not None and parsed < min_value:
+            print(f"Bitte mindestens {min_value} eingeben.")
+            continue
+        return str(parsed)
+
+
+def prompt_float(label: str, default: str, min_value: Optional[float] = None) -> str:
+    while True:
+        value = prompt_text(label, default)
+        normalized = value.replace(",", ".")
+        try:
+            parsed = float(normalized)
+        except ValueError:
+            print("Bitte eine Zahl eingeben.")
+            continue
+        if min_value is not None and parsed < min_value:
+            print(f"Bitte mindestens {min_value} eingeben.")
+            continue
+        return f"{parsed:g}"
+
+
+def prompt_yes_no(
+    label: str,
+    default: bool,
+    default_on_eof: Optional[bool] = None,
+) -> bool:
+    hint = "J/n" if default else "j/N"
+    try:
+        value = input(f"{label} ({hint}): ").strip().lower()
+    except EOFError:
+        print()
+        return default if default_on_eof is None else default_on_eof
+    if not value:
+        return default
+    if value in ("j", "ja", "y", "yes", "1", "true", "wahr"):
+        return True
+    if value in ("n", "nein", "no", "0", "false", "falsch"):
+        return False
+    print("Bitte mit j oder n antworten.")
+    return prompt_yes_no(label, default, default_on_eof)
+
+
+def apply_config_env_defaults(config: Dict[str, str]) -> None:
+    for key in RUNTIME_ENV_KEYS:
+        aliases = RUNTIME_KEY_ALIASES.get(key, (key,))
+        value = next((config[alias] for alias in aliases if alias in config), None)
+        if value is not None and not any(alias in os.environ for alias in aliases):
+            os.environ[key] = value
+
+
+def apply_preset(name: str) -> None:
+    if name == "quick-test":
+        os.environ["TRACK2TEXT_MAX_SAMPLES"] = "5"
+        os.environ["TRACK2TEXT_SECTION_KM"] = "9999"
+        os.environ["TRACK2TEXT_INCLUDE_START_GOAL"] = "0"
+    elif name == "fast":
+        os.environ["TRACK2TEXT_MAX_SAMPLES"] = "80"
+        os.environ["TRACK2TEXT_MIN_DIST_M"] = "120"
+        os.environ["TRACK2TEXT_SECTION_KM"] = "5"
+        os.environ["TRACK2TEXT_INCLUDE_START_GOAL"] = "1"
+    elif name == "detailed":
+        os.environ["TRACK2TEXT_MAX_SAMPLES"] = "400"
+        os.environ["TRACK2TEXT_MIN_DIST_M"] = "25"
+        os.environ["TRACK2TEXT_SECTION_KM"] = "2"
+        os.environ["TRACK2TEXT_LOCALITY_ZOOM"] = "14"
+        os.environ["TRACK2TEXT_INCLUDE_START_GOAL"] = "1"
+
+
+def apply_arg_overrides(args: argparse.Namespace) -> None:
+    if args.quick_test:
+        apply_preset("quick-test")
+    if args.fast:
+        apply_preset("fast")
+    if args.detailed:
+        apply_preset("detailed")
+    if args.file is not None:
+        os.environ["TRACK2TEXT_INPUT_FILE"] = args.file
+    for key in RUNTIME_ENV_KEYS:
+        value = getattr(args, key, None)
+        if value is not None:
+            os.environ[key] = value
+
+
+def prompt_preset() -> Optional[str]:
+    print("\nPreset:")
+    print("  [1] Manuell einstellen")
+    print("  [2] Quick test (sehr kurz)")
+    print("  [3] Fast (schneller, weniger Details)")
+    print("  [4] Detailed (langsamer, mehr Details)")
+    options = {
+        "1": None,
+        "custom": None,
+        "2": "quick-test",
+        "quick": "quick-test",
+        "quick-test": "quick-test",
+        "3": "fast",
+        "fast": "fast",
+        "4": "detailed",
+        "detail": "detailed",
+        "detailed": "detailed",
+    }
+    while True:
+        value = prompt_text("Auswahl", "1").lower()
+        if value in options:
+            preset = options[value]
+            if preset:
+                apply_preset(preset)
+            return preset
+        print("Bitte 1, 2, 3 oder 4 eingeben.")
+
+
+def prompt_track_file(config: Dict[str, str]) -> None:
+    current = env_first(["TRACK2TEXT_INPUT_FILE"], "") or config.get("input_file", "")
+    track_files = list_track_files(INBOX_DIR)
+    default_path = resolve_input_path(current) if current else None
+    if default_path is None and track_files:
+        default_path = track_files[0]
+
+    print("\nTrack-Datei:")
+    if track_files:
+        for idx, path in enumerate(track_files, start=1):
+            marker = " (neueste)" if idx == 1 else ""
+            print(f"  [{idx}] {describe_file(path)}{marker}")
+        print("  [p] Eigenen Pfad eingeben")
+        default_label = describe_file(default_path) if default_path else "neueste Datei"
+        while True:
+            value = prompt_text("Auswahl", default_label).lower()
+            if value == default_label.lower():
+                if default_path:
+                    os.environ["TRACK2TEXT_INPUT_FILE"] = default_path
+                return
+            if value in ("p", "pfad", "path"):
+                custom_path = prompt_text("Pfad zur GPX/FIT-Datei", current)
+                if custom_path:
+                    os.environ["TRACK2TEXT_INPUT_FILE"] = custom_path
+                return
+            try:
+                index = int(value)
+            except ValueError:
+                print("Bitte Nummer oder p eingeben.")
+                continue
+            if 1 <= index <= len(track_files):
+                os.environ["TRACK2TEXT_INPUT_FILE"] = track_files[index - 1]
+                return
+            print(f"Bitte eine Nummer zwischen 1 und {len(track_files)} eingeben.")
+    else:
+        print("  Keine GPX/FIT-Dateien im inbox-Ordner gefunden.")
+        custom_path = prompt_text("Pfad zur GPX/FIT-Datei leer lassen fuer neueste", current)
+        if custom_path:
+            os.environ["TRACK2TEXT_INPUT_FILE"] = custom_path
+
+
+def print_interactive_summary(lang: str, user_agent: str) -> None:
+    input_file = env_first(["TRACK2TEXT_INPUT_FILE"], "") or "neueste Datei in inbox/"
+    print("\nZusammenfassung:")
+    print(f"  Datei: {input_file}")
+    print(f"  Ausgabesprache: {lang}")
+    print(
+        "  Samples: "
+        + env_first(["TRACK2TEXT_MAX_SAMPLES", "GPXER_MAX_SAMPLES"], "200")
+    )
+    print(
+        "  Mindestabstand: "
+        + env_first(["TRACK2TEXT_MIN_DIST_M", "GPXER_MIN_DIST_M"], "50")
+        + " m"
+    )
+    print(
+        "  Abschnittslaenge: "
+        + env_first(["TRACK2TEXT_SECTION_KM", "GPXER_SECTION_KM"], "3")
+        + " km"
+    )
+    print(
+        "  Start/Ziel: "
+        + (
+            "ja"
+            if env_first(
+                ["TRACK2TEXT_INCLUDE_START_GOAL", "GPXER_INCLUDE_START_GOAL"], "1"
+            )
+            == "1"
+            else "nein"
+        )
+    )
+    print(
+        "  Geocoder: "
+        + env_first(["TRACK2TEXT_GEOCODER", "GPXER_GEOCODER"], "nominatim")
+    )
+    print(
+        "  Orts-Geocoder: "
+        + env_first(["TRACK2TEXT_LOCALITY_GEOCODER", "GPXER_LOCALITY_GEOCODER"], "photon")
+    )
+    print(
+        "  Orts-Zoom: "
+        + env_first(["TRACK2TEXT_LOCALITY_ZOOM", "GPXER_LOCALITY_ZOOM"], "12")
+    )
+    print(f"  User-Agent: {user_agent}")
+
+
+def run_interactive_cli(args: argparse.Namespace, config: Dict[str, str]) -> Optional[str]:
+    use_color = color_enabled()
+    print(colorize("Track2Text interaktiv", "cyan", use_color))
+    print("Enter uebernimmt jeweils den Wert in eckigen Klammern.")
+
+    lang = prompt_choice(
+        "Ausgabesprache",
+        ["DE", "EN"],
+        normalize_output_language(args.output_language or config.get("output_language")),
+    )
+    prompt_track_file(config)
+    selected_preset = prompt_preset()
+
+    if selected_preset is None:
+        os.environ["TRACK2TEXT_MAX_SAMPLES"] = prompt_int(
+            "Maximale Samples",
+            env_first(["TRACK2TEXT_MAX_SAMPLES", "GPXER_MAX_SAMPLES"], "200"),
+            min_value=1,
+        )
+        os.environ["TRACK2TEXT_MIN_DIST_M"] = prompt_float(
+            "Mindestabstand zwischen Samples in Metern",
+            env_first(["TRACK2TEXT_MIN_DIST_M", "GPXER_MIN_DIST_M"], "50"),
+            min_value=0,
+        )
+        os.environ["TRACK2TEXT_SECTION_KM"] = prompt_float(
+            "Abschnittslaenge in km (0 = aus)",
+            env_first(["TRACK2TEXT_SECTION_KM", "GPXER_SECTION_KM"], "3"),
+            min_value=0,
+        )
+        include_start_goal = prompt_yes_no(
+            "Start- und Zielzeile ausgeben",
+            env_first(["TRACK2TEXT_INCLUDE_START_GOAL", "GPXER_INCLUDE_START_GOAL"], "1")
+            == "1",
+        )
+        os.environ["TRACK2TEXT_INCLUDE_START_GOAL"] = "1" if include_start_goal else "0"
+        os.environ["TRACK2TEXT_GEOCODER"] = prompt_choice(
+            "Haupt-Geocoder",
+            ["nominatim", "photon"],
+            env_first(["TRACK2TEXT_GEOCODER", "GPXER_GEOCODER"], "nominatim").lower(),
+        )
+        os.environ["TRACK2TEXT_LOCALITY_GEOCODER"] = prompt_choice(
+            "Orts-Geocoder",
+            ["nominatim", "photon"],
+            env_first(
+                ["TRACK2TEXT_LOCALITY_GEOCODER", "GPXER_LOCALITY_GEOCODER"],
+                "photon",
+            ).lower(),
+        )
+        os.environ["TRACK2TEXT_LOCALITY_ZOOM"] = prompt_int(
+            "Orts-Zoom (0 = Ortsabfrage aus)",
+            env_first(["TRACK2TEXT_LOCALITY_ZOOM", "GPXER_LOCALITY_ZOOM"], "12"),
+            min_value=0,
+        )
+        current_user_agent = build_user_agent(config)
+        os.environ["NOMINATIM_USER_AGENT"] = prompt_text(
+            "Nominatim User-Agent",
+            current_user_agent,
+        )
+    elif (
+        env_first(["TRACK2TEXT_GEOCODER", "GPXER_GEOCODER"], "nominatim").lower()
+        == "nominatim"
+        and user_agent_looks_placeholder(build_user_agent(config))
+    ):
+        print(
+            "\nHinweis: Nominatim lehnt Platzhalter-User-Agents oft mit HTTP 403 ab."
+        )
+        os.environ["NOMINATIM_USER_AGENT"] = prompt_text(
+            "Nominatim User-Agent mit echter Kontaktadresse",
+            build_user_agent(config),
+        )
+
+    print_interactive_summary(lang, build_user_agent(config))
+    if not prompt_yes_no("Verarbeitung jetzt starten", True, default_on_eof=False):
+        print("Abgebrochen. Es wurden keine Dateien erzeugt.")
+        return None
+    return lang
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Create a route description from the newest GPX/FIT in inbox/."
@@ -1047,6 +1515,12 @@ def main() -> int:
         help="Process a specific GPX/FIT file (absolute or relative path, or filename in inbox/).",
     )
     parser.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help="Start an interactive prompt for the common Track2Text settings.",
+    )
+    parser.add_argument(
         "--quick-test",
         action="store_true",
         help="Run with very small output (5 samples, no sections, no start/finish).",
@@ -1066,43 +1540,17 @@ def main() -> int:
         help="Override Nominatim user agent (same as NOMINATIM_USER_AGENT env var).",
     )
     args = parser.parse_args()
-    if args.quick_test:
-        os.environ["TRACK2TEXT_MAX_SAMPLES"] = "5"
-        os.environ["TRACK2TEXT_SECTION_KM"] = "9999"
-        os.environ["TRACK2TEXT_INCLUDE_START_GOAL"] = "0"
-    if args.fast:
-        os.environ["TRACK2TEXT_MAX_SAMPLES"] = "80"
-        os.environ["TRACK2TEXT_MIN_DIST_M"] = "120"
-        os.environ["TRACK2TEXT_SECTION_KM"] = "5"
-        os.environ["TRACK2TEXT_INCLUDE_START_GOAL"] = "1"
-    if args.detailed:
-        os.environ["TRACK2TEXT_MAX_SAMPLES"] = "400"
-        os.environ["TRACK2TEXT_MIN_DIST_M"] = "25"
-        os.environ["TRACK2TEXT_SECTION_KM"] = "2"
-        os.environ["TRACK2TEXT_LOCALITY_ZOOM"] = "14"
-        os.environ["TRACK2TEXT_INCLUDE_START_GOAL"] = "1"
-    if args.file is not None:
-        os.environ["TRACK2TEXT_INPUT_FILE"] = args.file
-    if args.TRACK2TEXT_MAX_SAMPLES is not None:
-        os.environ["TRACK2TEXT_MAX_SAMPLES"] = args.TRACK2TEXT_MAX_SAMPLES
-    if args.TRACK2TEXT_SECTION_KM is not None:
-        os.environ["TRACK2TEXT_SECTION_KM"] = args.TRACK2TEXT_SECTION_KM
-    if args.TRACK2TEXT_INCLUDE_START_GOAL is not None:
-        os.environ["TRACK2TEXT_INCLUDE_START_GOAL"] = (
-            args.TRACK2TEXT_INCLUDE_START_GOAL
-        )
-    if args.TRACK2TEXT_GEOCODER is not None:
-        os.environ["TRACK2TEXT_GEOCODER"] = args.TRACK2TEXT_GEOCODER
-    if args.TRACK2TEXT_LOCALITY_GEOCODER is not None:
-        os.environ["TRACK2TEXT_LOCALITY_GEOCODER"] = args.TRACK2TEXT_LOCALITY_GEOCODER
-    if args.TRACK2TEXT_LOCALITY_ZOOM is not None:
-        os.environ["TRACK2TEXT_LOCALITY_ZOOM"] = args.TRACK2TEXT_LOCALITY_ZOOM
-    if args.TRACK2TEXT_MIN_DIST_M is not None:
-        os.environ["TRACK2TEXT_MIN_DIST_M"] = args.TRACK2TEXT_MIN_DIST_M
-    if args.NOMINATIM_USER_AGENT is not None:
-        os.environ["NOMINATIM_USER_AGENT"] = args.NOMINATIM_USER_AGENT
-    
+
     config = load_config(CONFIG_PATH)
+    apply_config_env_defaults(config)
+    apply_arg_overrides(args)
+    if args.interactive:
+        interactive_lang = run_interactive_cli(args, config)
+        if interactive_lang is None:
+            return 0
+        args.output_language = interactive_lang
+    refresh_runtime_geocoders()
+
     lang = normalize_output_language(
         args.output_language or config.get("output_language")
     )
@@ -1209,6 +1657,30 @@ def main() -> int:
             + json_path
         )
         return 0
+    except DependencyError as exc:
+        use_color = color_enabled()
+        label = "Fehlende Abhaengigkeit:" if lang == "DE" else "Missing dependency:"
+        print(colorize(label, "red", use_color))
+        print(str(exc))
+        return 1
+    except GeocodingError as exc:
+        use_color = color_enabled()
+        label = "Geocoding abgebrochen:" if lang == "DE" else "Geocoding aborted:"
+        print(colorize(label, "red", use_color))
+        print(str(exc))
+        return 1
+    except FileNotFoundError as exc:
+        use_color = color_enabled()
+        print(colorize(str(exc), "red", use_color))
+        hint = (
+            f"Lege eine .gpx- oder .fit-Datei in {INBOX_DIR} "
+            "oder starte mit --file PFAD bzw. --interactive."
+            if lang == "DE"
+            else f"Put a .gpx or .fit file into {INBOX_DIR} "
+            "or run with --file PATH or --interactive."
+        )
+        print(hint)
+        return 1
     except KeyboardInterrupt:
         use_color = color_enabled()
         msg = "Abbruch durch Benutzer." if lang == "DE" else "Aborted by user."

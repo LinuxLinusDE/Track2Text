@@ -88,6 +88,12 @@ Im Projektordner:
 python3 track2text.py
 ```
 
+Interaktiver Modus:
+
+```bash
+python3 track2text.py --interactive
+```
+
 ## Eingabe / Ausgabe
 
 - Eingabe: neueste `*.gpx` oder `*.fit` in `inbox`
@@ -120,6 +126,8 @@ Du kannst wichtige Einstellungen direkt nach dem Python-Aufruf uebergeben:
   (hoeher = weniger Punkte).
 - `--file inbox/meintrack.fit` verarbeitet eine bestimmte GPX/FIT-Datei
   (absoluter oder relativer Pfad, oder Dateiname in `inbox/`).
+- `--interactive` oder `-i` startet eine gefuehrte Abfrage fuer dieselben
+  wichtigen Einstellungen.
 - `--NOMINATIM_USER_AGENT="track2text/1.0 (contact: you@example.com)"` setzt
   einen passenden Nominatim-User-Agent.
 
@@ -141,6 +149,9 @@ angezeigt wird. Die Stichpunktliste ist dann nur wenige Zeilen lang.
   groesserer Abstand).
 - `--detailed` fuer einen langsameren, detaillierten Lauf (mehr Samples,
   kleinerer Abstand).
+
+Im interaktiven Modus springen Presets direkt zur Zusammenfassung. Waehle
+`Manuell einstellen`, wenn du einzelne Werte anpassen moechtest.
 
 ## Weitere Beispiele
 
@@ -262,6 +273,10 @@ Nominatim erwartet einen aussagekraeftigen User-Agent:
 ```bash
 NOMINATIM_USER_AGENT="track2text/1.0 (contact: you@example.com)" python3 track2text.py
 ```
+
+Wenn du `HTTP 403: Forbidden` bekommst, ist der User-Agent meist noch ein
+Platzhalter. Ersetze `you@example.com` durch eine echte Kontaktadresse oder
+waehle im interaktiven Modus als Haupt-Geocoder `photon`.
 
 ## Datenschutz / Sensitive Daten
 
